@@ -192,5 +192,27 @@ I'll give Claude the Architecture diagram + the Planning Loop and State Manageme
 ## Stretch Features (update before starting each)
 
 - [ ] Price comparison tool — `compare_price(item)` vs same-category listings.
-- [ ] Retry with loosened constraints when `search_listings` returns `[]`.
+- [x] **Retry with loosened constraints when `search_listings` returns `[]`** — see spec below.
 - [ ] Style profile memory across sessions.
+
+### Stretch — Retry logic with fallback (implemented)
+
+**What it does:**
+When the initial `search_listings` call returns `[]`, the planning loop does not
+immediately error. Instead it retries with progressively looser filters and tells
+the user exactly what was relaxed.
+
+**Where it lives:** `agent.py`, helper `_search_with_fallback(parsed)` called by
+`run_agent` in place of a single `search_listings` call.
+
+**Conditional logic:**
+1. Attempt 1 — `search_listings(description, size, max_price)`. If non-empty → return results, no note.
+2. Attempt 2 — only if a `size` filter was set: `search_listings(description, None, max_price)`. Note: "removed the size filter (<size>)".
+3. Attempt 3 — only if a `max_price` was set: `search_listings(description, None, None)`. Note adds: "ignored the max price ($<n>)".
+4. If still empty → return `([], None)` and the loop sets `session["error"]` (unchanged behaviour).
+
+**State:** new field `session["search_note"]` holds the adjustment message (or `None`).
+`app.py` prepends this note to the listing panel; `agent.py` prints it in the CLI.
+
+**Why this order:** size is the most arbitrary filter to relax (sizing strings are
+inconsistent), price is relaxed only as a last resort since it changes affordability.

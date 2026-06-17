@@ -75,6 +75,47 @@ def _parse_query(query: str) -> dict:
     return {"description": description, "size": size, "max_price": max_price}
 
 
+# ── search with fallback (stretch: retry logic) ───────────────────────────────
+
+def _search_with_fallback(parsed: dict) -> tuple[list[dict], str | None]:
+    """
+    Search with progressively looser filters when the exact query finds nothing.
+
+    Order of relaxation: size first (sizing strings are inconsistent), then
+    max_price as a last resort. Returns (results, note) where `note` explains
+    what was relaxed, or None if the first attempt already succeeded.
+    """
+    desc = parsed["description"]
+    size = parsed["size"]
+    max_price = parsed["max_price"]
+
+    # Attempt 1 — full constraints.
+    results = search_listings(desc, size, max_price)
+    if results:
+        return results, None
+
+    adjustments = []
+
+    # Attempt 2 — drop the size filter (if one was set).
+    if size is not None:
+        results = search_listings(desc, None, max_price)
+        adjustments.append(f"removed the size filter ({size})")
+        if results:
+            note = "No exact matches, so I " + " and ".join(adjustments) + "."
+            return results, note
+
+    # Attempt 3 — also drop the price ceiling (if one was set).
+    if max_price is not None:
+        results = search_listings(desc, None, None)
+        adjustments.append(f"ignored the max price (${max_price:.0f})")
+        if results:
+            note = "No exact matches, so I " + " and ".join(adjustments) + "."
+            return results, note
+
+    # Nothing worked even with everything relaxed.
+    return [], None
+
+
 # ── session state ─────────────────────────────────────────────────────────────
 
 def _new_session(query: str, wardrobe: dict) -> dict:
@@ -91,6 +132,7 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "query": query,              # original user query
         "parsed": {},                # extracted description / size / max_price
         "search_results": [],        # list of matching listing dicts
+        "search_note": None,         # set if filters were loosened to find results
         "selected_item": None,       # top result, passed into suggest_outfit
         "wardrobe": wardrobe,        # user's wardrobe dict
         "outfit_suggestion": None,   # string returned by suggest_outfit
@@ -153,11 +195,10 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     parsed = _parse_query(query)
     session["parsed"] = parsed
 
-    # Step 3 — search. This result decides whether the rest of the loop runs.
-    results = search_listings(
-        parsed["description"], parsed["size"], parsed["max_price"]
-    )
+    # Step 3 — search, with automatic fallback that loosens filters if needed.
+    results, note = _search_with_fallback(parsed)
     session["search_results"] = results
+    session["search_note"] = note
 
     # ── ERROR BRANCH ── no listings → explain and stop before the next tools.
     if not results:
@@ -204,6 +245,8 @@ if __name__ == "__main__":
     if session["error"]:
         print(f"Error: {session['error']}")
     else:
+        if session["search_note"]:
+            print(f"Note: {session['search_note']}")
         print(f"Found: {session['selected_item']['title']}")
         print(f"\nOutfit: {session['outfit_suggestion']}")
         print(f"\nFit card: {session['fit_card']}")

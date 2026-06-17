@@ -62,7 +62,8 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
 
     # 5. Happy path — format the selected listing into readable text.
     item = session["selected_item"]
-    listing_text = (
+    note_prefix = f"ℹ️ {session['search_note']}\n\n" if session.get("search_note") else ""
+    listing_text = note_prefix + (
         f"{item['title']}\n"
         f"${item['price']:.2f} · {item['platform']} · {item['condition']} condition\n"
         f"Size: {item['size']}\n"
