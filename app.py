@@ -80,6 +80,7 @@ EXAMPLE_QUERIES = [
     "90s track jacket in size M",
     "flowy midi skirt under $40",
     "black combat boots size 8",
+    "vintage graphic tee size XXL",          # triggers retry: size relaxed
     "designer ballgown size XXS under $5",   # deliberate no-results test
 ]
 
