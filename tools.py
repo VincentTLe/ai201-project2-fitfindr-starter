@@ -13,6 +13,7 @@ Tools:
 """
 
 import os
+import re
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -20,6 +21,8 @@ from groq import Groq
 from utils.data_loader import load_listings
 
 load_dotenv()
+
+LLM_MODEL = "llama-3.3-70b-versatile"
 
 
 # ── Groq client ───────────────────────────────────────────────────────────────
@@ -32,6 +35,31 @@ def _get_groq_client():
             "GROQ_API_KEY not set. Add it to a .env file in the project root."
         )
     return Groq(api_key=api_key)
+
+
+def _call_llm(prompt: str, temperature: float = 0.7) -> str:
+    """Send a single user prompt to Groq and return the text response."""
+    client = _get_groq_client()
+    completion = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+    )
+    return completion.choices[0].message.content.strip()
+
+
+# Words that carry no matching signal — ignored when scoring relevance.
+_STOPWORDS = {
+    "a", "an", "the", "for", "with", "and", "or", "of", "to", "in", "on",
+    "i", "im", "looking", "want", "need", "some", "thrift", "thrifted",
+    "secondhand", "find", "piece", "under", "size",
+}
+
+
+def _keywords(text: str) -> list[str]:
+    """Lowercase, strip punctuation, drop stopwords — used for scoring."""
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    return [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
 
 
 # ── Tool 1: search_listings ───────────────────────────────────────────────────
@@ -69,8 +97,38 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    listings = load_listings()
+    query_keywords = _keywords(description)
+
+    scored = []
+    for item in listings:
+        # 1. Price filter (inclusive).
+        if max_price is not None and item["price"] > max_price:
+            continue
+
+        # 2. Size filter — case-insensitive substring so "M" matches "S/M".
+        if size is not None and size.strip():
+            if size.strip().lower() not in item["size"].lower():
+                continue
+
+        # 3. Score by keyword overlap against the searchable text fields.
+        haystack = " ".join([
+            item["title"],
+            item["description"],
+            " ".join(item["style_tags"]),
+            item["category"],
+            " ".join(item["colors"]),
+        ]).lower()
+
+        score = sum(1 for kw in query_keywords if kw in haystack)
+
+        # 4. Drop listings with no relevant match.
+        if score > 0:
+            scored.append((score, item))
+
+    # 5. Sort by score, highest first.
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +158,48 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    item_desc = (
+        f"{new_item['title']} (category: {new_item['category']}, "
+        f"colors: {', '.join(new_item['colors'])}, "
+        f"style: {', '.join(new_item['style_tags'])})"
+    )
+
+    items = wardrobe.get("items", []) if wardrobe else []
+
+    if not items:
+        # Empty wardrobe → general styling advice (no specific pieces to name).
+        prompt = (
+            "You are a thoughtful personal stylist. The user just found this "
+            f"secondhand item:\n  {item_desc}\n\n"
+            "They have not entered a wardrobe yet. In 3-4 sentences, suggest one "
+            "or two complete outfit ideas built around this item — describe the "
+            "kinds of pieces (bottoms, shoes, layers) that pair well and the vibe "
+            "it suits. Be specific and practical, not generic."
+        )
+    else:
+        wardrobe_lines = "\n".join(
+            f"  - {it['name']} ({it['category']}; "
+            f"{', '.join(it.get('style_tags', []))})"
+            for it in items
+        )
+        prompt = (
+            "You are a thoughtful personal stylist. The user just found this "
+            f"secondhand item:\n  {item_desc}\n\n"
+            f"Their current wardrobe:\n{wardrobe_lines}\n\n"
+            "Suggest 1-2 complete outfits that pair this new item with specific "
+            "pieces from their wardrobe (name the pieces). Add a short styling tip "
+            "(how to layer, tuck, roll, etc.). Keep it to 3-5 sentences, casual and "
+            "specific."
+        )
+
+    try:
+        return _call_llm(prompt, temperature=0.7)
+    except Exception as exc:  # network/API failure — degrade gracefully
+        return (
+            f"Style the {new_item['title'].split('—')[0].strip()} as the focal "
+            f"piece and keep the rest simple in neutral tones. "
+            f"(Styling service was unavailable: {exc})"
+        )
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -133,5 +231,34 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # 1. Guard against an empty or whitespace-only outfit.
+    if not outfit or not outfit.strip():
+        return "Can't write a fit card without an outfit suggestion."
+
+    name = new_item.get("title", "this piece")
+    price = new_item.get("price")
+    platform = new_item.get("platform", "thrift")
+
+    prompt = (
+        "Write a short, casual OOTD-style caption (2-4 sentences) for a "
+        "thrifted-fashion social post. Make it sound like a real person's "
+        "Instagram/TikTok caption, NOT a product description.\n\n"
+        f"Item: {name}\n"
+        f"Price: ${price}\n"
+        f"Platform: {platform}\n"
+        f"The outfit: {outfit}\n\n"
+        "Mention the item, price, and platform naturally (once each). Capture the "
+        "outfit's vibe in specific terms. Lowercase casual tone and a tasteful "
+        "emoji or two are welcome. Return only the caption."
+    )
+
+    # 2 & 3. Higher temperature → varied captions for varied inputs.
+    try:
+        return _call_llm(prompt, temperature=1.0)
+    except Exception:
+        # Fallback template so the user still gets something shareable.
+        return (
+            f"thrifted this {name.split('—')[0].strip().lower()} off {platform} "
+            f"for ${price} and i'm obsessed ✨ styled it exactly how i wanted — "
+            f"full look soon!"
+        )
