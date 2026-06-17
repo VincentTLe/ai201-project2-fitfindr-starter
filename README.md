@@ -160,6 +160,29 @@ I gave Claude the Architecture diagram plus the Planning Loop and State Manageme
 
 ---
 
+## Stretch Feature — Retry with Loosened Constraints
+
+When the exact query returns no listings, the planning loop does **not** error
+immediately. `_search_with_fallback` (in `agent.py`) retries with progressively
+looser filters and tells the user what it relaxed:
+
+1. Full query (`description` + `size` + `max_price`).
+2. If empty → drop the **size** filter and retry.
+3. If still empty → also drop the **max_price** ceiling and retry.
+4. If still empty → set `session["error"]` (original behaviour).
+
+When a retry succeeds, `session["search_note"]` carries a message like
+*"No exact matches, so I removed the size filter (XXL)."* — shown in the listing
+panel and the CLI. Example:
+
+```
+query: "vintage graphic tee size XXL"
+NOTE:  No exact matches, so I removed the size filter (XXL).
+FOUND: Y2K Baby Tee — Butterfly Print
+```
+
+Covered by `tests/test_agent.py`.
+
 ## Project Structure
 
 ```
